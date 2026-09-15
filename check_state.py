@@ -1,4 +1,4 @@
-from app.config import DB_FILE
+from app.config import DEFAULT_PREVIEW_LENGTH
 from app.state import AppState
 from app.storage import SqliteStorage
 
@@ -10,25 +10,42 @@ def main():
     assert state.current_filter == "all"
     assert state.is_new_note is True
 
-    state.select_note(10)
+    assert state.pinned_first is True
+    assert (
+        state.preview_length
+        == DEFAULT_PREVIEW_LENGTH
+    )
 
-    assert state.selected_note_id == 10
-    assert state.is_new_note is False
+    state.set_preferences(
+        False,
+        45,
+    )
 
-    state.start_new_note()
+    assert state.pinned_first is False
+    assert state.preview_length == 45
 
-    assert state.selected_note_id is None
-    assert state.is_new_note is True
+    state.set_preferences(
+        True,
+        DEFAULT_PREVIEW_LENGTH,
+    )
 
-    state.set_filter("pinned")
+    storage = SqliteStorage(
+        "workspace_ilya_sender.db"
+    )
 
-    assert state.current_filter == "pinned"
+    all_count = storage.count_notes("all")
+    pinned_count = storage.count_notes(
+        "pinned"
+    )
+    other_count = storage.count_notes("other")
 
-    storage = SqliteStorage(DB_FILE)
-
-    print("All notes:", storage.count_notes("all"))
-    print("Pinned notes:", storage.count_notes("pinned"))
-    print("Other notes:", storage.count_notes("other"))
+    print(f"All notes: {all_count}")
+    print(f"Pinned notes: {pinned_count}")
+    print(f"Other notes: {other_count}")
+    print(
+        f"Default preview: "
+        f"{state.preview_length}"
+    )
 
     storage.close()
 
