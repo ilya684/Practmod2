@@ -7,7 +7,6 @@ class WindowManager:
     def __init__(self, app_state, storage):
         self.app_state = app_state
         self.storage = storage
-
         self.main_windows = []
         self.note_windows = {}
         self.window_counter = 0
@@ -48,11 +47,9 @@ class WindowManager:
     def open_note_window(self, note_id):
         if note_id in self.note_windows:
             window = self.note_windows[note_id]
-
             window.show()
             window.raise_()
             window.activateWindow()
-
             return window
 
         from app.ui.note_window import NoteWindow
@@ -78,10 +75,7 @@ class WindowManager:
         return window
 
     def remove_note_window(self, note_id):
-        self.note_windows.pop(
-            note_id,
-            None,
-        )
+        self.note_windows.pop(note_id, None)
 
     def close_all_windows(self):
         for window in list(

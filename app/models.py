@@ -3,7 +3,7 @@ from dataclasses import dataclass
 
 @dataclass
 class Note:
-    id: int | None
+    id: int
     text: str
     created_at: str
     pinned: bool = False

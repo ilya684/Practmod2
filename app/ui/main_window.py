@@ -1,6 +1,7 @@
 import csv
+import logging
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QByteArray, QTimer, Qt
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -11,10 +12,19 @@ from PySide6.QtWidgets import (
     QToolButton,
 )
 
-from app.config import APP_TITLE, STUDENT_GROUP, STUDENT_NAME
+from app.config import (
+    APP_TITLE,
+    RECENT_EXPORTS_MAX,
+    STUDENT_GROUP,
+    STUDENT_NAME,
+)
+from app.storage import StorageError
 from app.ui.note_editor_panel import NoteEditorPanel
 from app.ui.note_list_panel import NoteListPanel
 from app.ui.preferences_dialog import PreferencesDialog
+
+
+logger = logging.getLogger(__name__)
 
 
 class MainWindow(QMainWindow):
@@ -53,18 +63,25 @@ class MainWindow(QMainWindow):
         self.create_toolbar()
         self.create_status_bar()
 
+        self.autosave_timer = QTimer(self)
+        self.autosave_timer.timeout.connect(
+            self.autosave_note
+        )
+
         self.app_state.notes_changed.connect(
             self.refresh_from_state
         )
 
         self.app_state.settings_changed.connect(
-            self.refresh_from_state
+            self.apply_settings
         )
 
         self.setWindowTitle(
             self.window_title()
         )
 
+        self.restore_window_state()
+        self.apply_settings()
         self.load_notes()
 
     def window_title(self):
@@ -75,12 +92,16 @@ class MainWindow(QMainWindow):
             )
 
         return (
-            f"{APP_TITLE} ({self.window_number}) - "
+            f"{APP_TITLE} "
+            f"({self.window_number}) - "
             f"{STUDENT_NAME}, {STUDENT_GROUP}"
         )
 
     def create_notes_dock(self):
-        dock = QDockWidget("Notes", self)
+        dock = QDockWidget(
+            "Notes",
+            self,
+        )
 
         dock.setObjectName(
             f"NotesDock{self.window_number}"
@@ -254,15 +275,12 @@ class MainWindow(QMainWindow):
         note_menu.addAction(
             self.new_action
         )
-
         note_menu.addAction(
             self.save_action
         )
-
         note_menu.addAction(
             self.delete_action
         )
-
         note_menu.addAction(
             self.pin_action
         )
@@ -292,7 +310,6 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(
             self.save_action
         )
-
         edit_menu.addAction(
             self.delete_action
         )
@@ -304,7 +321,6 @@ class MainWindow(QMainWindow):
         export_menu.addAction(
             self.export_txt_action
         )
-
         export_menu.addAction(
             self.export_csv_action
         )
@@ -322,7 +338,6 @@ class MainWindow(QMainWindow):
         window_menu.addAction(
             self.new_window_action
         )
-
         window_menu.addAction(
             self.close_window_action
         )
@@ -334,11 +349,9 @@ class MainWindow(QMainWindow):
         view_menu.addAction(
             self.all_action
         )
-
         view_menu.addAction(
             self.pinned_action
         )
-
         view_menu.addAction(
             self.other_action
         )
@@ -358,7 +371,9 @@ class MainWindow(QMainWindow):
         )
 
     def create_toolbar(self):
-        toolbar = self.addToolBar("Main")
+        toolbar = self.addToolBar(
+            "Main"
+        )
 
         toolbar.setObjectName(
             f"MainToolbar{self.window_number}"
@@ -367,11 +382,9 @@ class MainWindow(QMainWindow):
         toolbar.addAction(
             self.new_action
         )
-
         toolbar.addAction(
             self.save_action
         )
-
         toolbar.addAction(
             self.delete_action
         )
@@ -381,7 +394,6 @@ class MainWindow(QMainWindow):
         toolbar.addAction(
             self.open_note_action
         )
-
         toolbar.addAction(
             self.new_window_action
         )
@@ -397,11 +409,9 @@ class MainWindow(QMainWindow):
         toolbar.addAction(
             self.all_action
         )
-
         toolbar.addAction(
             self.pinned_action
         )
-
         toolbar.addAction(
             self.other_action
         )
@@ -409,9 +419,7 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
 
         export_button = QToolButton()
-
         export_button.setText("Export")
-
         export_button.setPopupMode(
             QToolButton.ToolButtonPopupMode.InstantPopup
         )
@@ -421,7 +429,6 @@ class MainWindow(QMainWindow):
         export_menu.addAction(
             self.export_txt_action
         )
-
         export_menu.addAction(
             self.export_csv_action
         )
@@ -440,51 +447,97 @@ class MainWindow(QMainWindow):
         )
 
         self.window_status = QToolButton()
-
         self.window_status.setText(
             f"Window: {self.window_number}"
         )
-
-        self.window_status.setEnabled(
-            False
-        )
+        self.window_status.setEnabled(False)
 
         self.statusBar().addPermanentWidget(
             self.window_status
         )
 
         self.notes_status = QToolButton()
-
         self.notes_status.setText(
             "Notes: 0"
         )
-
-        self.notes_status.setEnabled(
-            False
-        )
+        self.notes_status.setEnabled(False)
 
         self.statusBar().addPermanentWidget(
             self.notes_status
         )
 
+    def apply_settings(self):
+        self.editor.apply_font_size(
+            self.app_state.settings.font_size
+        )
+
+        self.app_state.preview_length = (
+            self.app_state.settings.preview_length
+        )
+
+        if self.app_state.settings.autosave:
+            interval = (
+                self.app_state.settings.autosave_interval_s
+                * 1000
+            )
+            self.autosave_timer.start(interval)
+        else:
+            self.autosave_timer.stop()
+
+        self.load_notes()
+
+    def restore_window_state(self):
+        settings = self.app_state.settings
+
+        geometry = settings.window_geometry
+        state = settings.window_state
+
+        if isinstance(geometry, QByteArray) and not geometry.isEmpty():
+            self.restoreGeometry(geometry)
+
+        if isinstance(state, QByteArray) and not state.isEmpty():
+            self.restoreState(state)
+
+    def save_window_state(self):
+        settings = self.app_state.settings
+
+        settings.set_window_geometry(
+            self.saveGeometry()
+        )
+        settings.set_window_state(
+            self.saveState()
+        )
+        settings.sync()
+
     def load_notes(self):
-        notes = self.storage.get_notes(
-            self.app_state.current_filter
-        )
+        try:
+            notes = self.storage.get_notes(
+                self.app_state.current_filter
+            )
 
-        self.note_list.set_notes(
-            notes,
-            self.app_state.preview_length,
-            self.app_state.pinned_first,
-        )
+            self.note_list.set_notes(
+                notes,
+                self.app_state.preview_length,
+                self.app_state.pinned_first,
+            )
 
-        count = self.storage.count_notes(
-            self.app_state.current_filter
-        )
+            count = self.storage.count_notes(
+                self.app_state.current_filter
+            )
 
-        self.notes_status.setText(
-            f"Notes: {count}"
-        )
+            self.notes_status.setText(
+                f"Notes: {count}"
+            )
+        except StorageError as error:
+            logger.error(
+                "Failed to load notes: %s",
+                error,
+            )
+            QMessageBox.critical(
+                self,
+                "Database error",
+                str(error),
+            )
 
     def refresh_from_state(self):
         self.load_notes()
@@ -493,9 +546,21 @@ class MainWindow(QMainWindow):
             self.app_state.selected_note_id
             is not None
         ):
-            note = self.storage.get_note(
-                self.app_state.selected_note_id
-            )
+            try:
+                note = self.storage.get_note(
+                    self.app_state.selected_note_id
+                )
+            except StorageError as error:
+                logger.error(
+                    "Failed to refresh note: %s",
+                    error,
+                )
+                QMessageBox.critical(
+                    self,
+                    "Database error",
+                    str(error),
+                )
+                return
 
             if note is not None:
                 self.editor.set_note_text(
@@ -510,9 +575,21 @@ class MainWindow(QMainWindow):
         if note_id is None:
             return
 
-        note = self.storage.get_note(
-            note_id
-        )
+        try:
+            note = self.storage.get_note(
+                note_id
+            )
+        except StorageError as error:
+            logger.error(
+                "Failed to select note: %s",
+                error,
+            )
+            QMessageBox.critical(
+                self,
+                "Database error",
+                str(error),
+            )
+            return
 
         if note is None:
             return
@@ -527,11 +604,8 @@ class MainWindow(QMainWindow):
 
     def new_note(self):
         self.app_state.start_new_note()
-
         self.note_list.clearSelection()
-
         self.editor.clear_note()
-
         self.editor.setFocus()
 
     def save_note(self):
@@ -543,35 +617,62 @@ class MainWindow(QMainWindow):
                 "Warning",
                 "Note cannot be empty.",
             )
-            return
+            return False
 
-        if self.app_state.is_new_note:
-            note_id = self.storage.create_note(
-                text
+        try:
+            if self.app_state.is_new_note:
+                note_id = self.storage.create_note(
+                    text
+                )
+
+                self.app_state.select_note(
+                    note_id
+                )
+
+                self.app_state.notes_changed.emit()
+
+                return True
+
+            note_id = (
+                self.app_state.selected_note_id
             )
 
-            self.app_state.select_note(
+            if note_id is None:
+                return False
+
+            self.storage.update_note(
+                note_id,
+                text,
+            )
+
+            self.app_state.note_changed.emit(
                 note_id
             )
 
             self.app_state.notes_changed.emit()
 
+            return True
+
+        except StorageError as error:
+            logger.error(
+                "Failed to save note: %s",
+                error,
+            )
+            QMessageBox.critical(
+                self,
+                "Database error",
+                str(error),
+            )
+            return False
+
+    def autosave_note(self):
+        if not self.app_state.settings.autosave:
             return
 
-        note_id = (
-            self.app_state.selected_note_id
-        )
+        if not self.editor.get_text().strip():
+            return
 
-        self.storage.update_note(
-            note_id,
-            text,
-        )
-
-        self.app_state.note_changed.emit(
-            note_id
-        )
-
-        self.app_state.notes_changed.emit()
+        self.save_note()
 
     def delete_note(self):
         note_id = (
@@ -586,30 +687,42 @@ class MainWindow(QMainWindow):
             )
             return
 
-        answer = QMessageBox.question(
-            self,
-            "Delete note",
-            "Delete selected note?",
-            QMessageBox.StandardButton.Yes
-            | QMessageBox.StandardButton.No,
-        )
+        if self.app_state.settings.confirm_delete:
+            answer = QMessageBox.question(
+                self,
+                "Delete note",
+                "Delete selected note?",
+                QMessageBox.StandardButton.Yes
+                | QMessageBox.StandardButton.No,
+            )
 
-        if (
-            answer
-            != QMessageBox.StandardButton.Yes
-        ):
+            if (
+                answer
+                != QMessageBox.StandardButton.Yes
+            ):
+                return
+
+        try:
+            self.storage.delete_note(
+                note_id
+            )
+        except StorageError as error:
+            logger.error(
+                "Failed to delete note: %s",
+                error,
+            )
+            QMessageBox.critical(
+                self,
+                "Database error",
+                str(error),
+            )
             return
-
-        self.storage.delete_note(
-            note_id
-        )
 
         self.app_state.note_changed.emit(
             note_id
         )
 
         self.app_state.start_new_note()
-
         self.editor.clear_note()
 
         self.app_state.notes_changed.emit()
@@ -622,9 +735,21 @@ class MainWindow(QMainWindow):
         if note_id is None:
             return
 
-        self.storage.toggle_pin(
-            note_id
-        )
+        try:
+            self.storage.toggle_pin(
+                note_id
+            )
+        except StorageError as error:
+            logger.error(
+                "Failed to change pin state: %s",
+                error,
+            )
+            QMessageBox.critical(
+                self,
+                "Database error",
+                str(error),
+            )
+            return
 
         self.app_state.note_changed.emit(
             note_id
@@ -665,28 +790,42 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def clear_all_notes(self):
-        answer = QMessageBox.question(
-            self,
-            "Clear all notes",
-            "Delete all notes?",
-            QMessageBox.StandardButton.Yes
-            | QMessageBox.StandardButton.No,
-        )
-
-        if (
-            answer
-            != QMessageBox.StandardButton.Yes
-        ):
-            return
-
-        note_ids = [
-            note.id
-            for note in self.storage.get_notes(
-                "all"
+        if self.app_state.settings.confirm_delete:
+            answer = QMessageBox.question(
+                self,
+                "Clear all notes",
+                "Delete all notes?",
+                QMessageBox.StandardButton.Yes
+                | QMessageBox.StandardButton.No,
             )
-        ]
 
-        self.storage.delete_all()
+            if (
+                answer
+                != QMessageBox.StandardButton.Yes
+            ):
+                return
+
+        try:
+            note_ids = [
+                note.id
+                for note in self.storage.get_notes(
+                    "all"
+                )
+            ]
+
+            self.storage.delete_all()
+
+        except StorageError as error:
+            logger.error(
+                "Failed to clear notes: %s",
+                error,
+            )
+            QMessageBox.critical(
+                self,
+                "Database error",
+                str(error),
+            )
+            return
 
         for note_id in note_ids:
             self.app_state.note_changed.emit(
@@ -694,7 +833,6 @@ class MainWindow(QMainWindow):
             )
 
         self.app_state.start_new_note()
-
         self.editor.clear_note()
 
         self.app_state.notes_changed.emit()
@@ -710,21 +848,34 @@ class MainWindow(QMainWindow):
         if not file_name:
             return
 
-        notes = self.storage.get_notes(
-            "all"
-        )
+        try:
+            notes = self.storage.get_notes(
+                "all"
+            )
 
-        with open(
-            file_name,
-            "w",
-            encoding="utf-8",
-        ) as file:
-            for note in notes:
-                file.write(
-                    f"{note.id} | "
-                    f"{note.created_at} | "
-                    f"{note.text}\n"
-                )
+            with open(
+                file_name,
+                "w",
+                encoding="utf-8",
+            ) as file:
+                for note in notes:
+                    file.write(
+                        f"{note.id} | "
+                        f"{note.created_at} | "
+                        f"{note.text}\n"
+                    )
+
+            self.add_recent_export(file_name)
+
+        except (OSError, StorageError) as error:
+            logger.exception(
+                "TXT export failed"
+            )
+            QMessageBox.critical(
+                self,
+                "Export error",
+                str(error),
+            )
 
     def export_csv(self):
         file_name, _ = QFileDialog.getSaveFileName(
@@ -737,36 +888,64 @@ class MainWindow(QMainWindow):
         if not file_name:
             return
 
-        notes = self.storage.get_notes(
-            "all"
-        )
-
-        with open(
-            file_name,
-            "w",
-            newline="",
-            encoding="utf-8",
-        ) as file:
-            writer = csv.writer(file)
-
-            writer.writerow(
-                [
-                    "id",
-                    "text",
-                    "created_at",
-                    "pinned",
-                ]
+        try:
+            notes = self.storage.get_notes(
+                "all"
             )
 
-            for note in notes:
+            with open(
+                file_name,
+                "w",
+                newline="",
+                encoding="utf-8",
+            ) as file:
+                writer = csv.writer(file)
+
                 writer.writerow(
                     [
-                        note.id,
-                        note.text,
-                        note.created_at,
-                        int(note.pinned),
+                        "id",
+                        "text",
+                        "created_at",
+                        "pinned",
                     ]
                 )
+
+                for note in notes:
+                    writer.writerow(
+                        [
+                            note.id,
+                            note.text,
+                            note.created_at,
+                            int(note.pinned),
+                        ]
+                    )
+
+            self.add_recent_export(file_name)
+
+        except (OSError, StorageError) as error:
+            logger.exception(
+                "CSV export failed"
+            )
+            QMessageBox.critical(
+                self,
+                "Export error",
+                str(error),
+            )
+
+    def add_recent_export(self, file_name):
+        settings = self.app_state.settings
+        exports = settings.recent_exports
+
+        exports = [
+            item
+            for item in exports
+            if item != file_name
+        ]
+
+        exports.insert(0, file_name)
+        exports = exports[:RECENT_EXPORTS_MAX]
+
+        settings.set_recent_exports(exports)
 
     def show_about(self):
         QMessageBox.about(
@@ -778,3 +957,21 @@ class MainWindow(QMainWindow):
 
     def quit_application(self):
         self.window_manager.close_all_windows()
+
+    def closeEvent(self, event):
+        try:
+            if self.app_state.settings.autosave:
+                self.autosave_note()
+
+            self.save_window_state()
+        except Exception as error:
+            logger.exception(
+                "Window close handling failed"
+            )
+            QMessageBox.critical(
+                self,
+                "Application error",
+                str(error),
+            )
+
+        super().closeEvent(event)

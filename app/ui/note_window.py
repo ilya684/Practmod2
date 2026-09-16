@@ -1,8 +1,11 @@
+import logging
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QTextEdit,
     QVBoxLayout,
@@ -10,6 +13,10 @@ from PySide6.QtWidgets import (
 )
 
 from app.config import APP_TITLE
+from app.storage import StorageError
+
+
+logger = logging.getLogger(__name__)
 
 
 class NoteWindow(QWidget):
@@ -26,7 +33,6 @@ class NoteWindow(QWidget):
         self.app_state = app_state
         self.window_manager = window_manager
         self.note_id = note_id
-
         self.is_modified = False
 
         self.text_edit = QTextEdit()
@@ -35,6 +41,7 @@ class NoteWindow(QWidget):
         self.close_button = QPushButton("Close")
 
         self.create_ui()
+        self.apply_settings()
         self.load_note()
 
         self.text_edit.textChanged.connect(
@@ -53,6 +60,10 @@ class NoteWindow(QWidget):
             self.on_note_changed
         )
 
+        self.app_state.settings_changed.connect(
+            self.apply_settings
+        )
+
     def create_ui(self):
         self.setAttribute(
             Qt.WidgetAttribute.WA_DeleteOnClose
@@ -69,11 +80,13 @@ class NoteWindow(QWidget):
         )
 
         top_layout.addStretch()
+
         top_layout.addWidget(
             self.pinned_box
         )
 
         layout.addLayout(top_layout)
+
         layout.addWidget(self.text_edit)
 
         bottom_layout = QHBoxLayout()
@@ -90,10 +103,30 @@ class NoteWindow(QWidget):
 
         layout.addLayout(bottom_layout)
 
-    def load_note(self):
-        note = self.storage.get_note(
-            self.note_id
+    def apply_settings(self):
+        font = self.text_edit.font()
+        font.setPointSize(
+            self.app_state.settings.font_size
         )
+        self.text_edit.setFont(font)
+
+    def load_note(self):
+        try:
+            note = self.storage.get_note(
+                self.note_id
+            )
+        except StorageError as error:
+            logger.error(
+                "Failed to load note window: %s",
+                error,
+            )
+            QMessageBox.critical(
+                self,
+                "Database error",
+                str(error),
+            )
+            self.close()
+            return
 
         if note is None:
             self.close()
@@ -135,24 +168,58 @@ class NoteWindow(QWidget):
                 self.note_id,
                 text,
             )
-        except Exception:
+        except StorageError as error:
+            logger.error(
+                "Failed to update note window: %s",
+                error,
+            )
+            QMessageBox.critical(
+                self,
+                "Database error",
+                str(error),
+            )
+            self.update_title()
             return
 
         self.app_state.notes_changed.emit()
         self.update_title()
 
     def on_pinned_changed(self, checked):
-        note = self.storage.get_note(
-            self.note_id
-        )
+        try:
+            note = self.storage.get_note(
+                self.note_id
+            )
+        except StorageError as error:
+            logger.error(
+                "Failed to load pin state: %s",
+                error,
+            )
+            QMessageBox.critical(
+                self,
+                "Database error",
+                str(error),
+            )
+            return
 
         if note is None:
             return
 
         if note.pinned != checked:
-            self.storage.toggle_pin(
-                self.note_id
-            )
+            try:
+                self.storage.toggle_pin(
+                    self.note_id
+                )
+            except StorageError as error:
+                logger.error(
+                    "Failed to change pin state: %s",
+                    error,
+                )
+                QMessageBox.critical(
+                    self,
+                    "Database error",
+                    str(error),
+                )
+                return
 
         self.app_state.notes_changed.emit()
 

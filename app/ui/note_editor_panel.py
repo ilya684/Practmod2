@@ -1,3 +1,4 @@
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QTextEdit
 
 
@@ -11,3 +12,7 @@ class NoteEditorPanel(QTextEdit):
     def clear_note(self):
         self.clear()
 
+    def apply_font_size(self, size):
+        font = self.font()
+        font.setPointSize(size)
+        self.setFont(font)
